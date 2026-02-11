@@ -85,14 +85,14 @@ impl Photo {
             image::imageops::FilterType::Lanczos3,
         );
 
-        let mut data_large = Vec::new();
+        let mut data_large = vec![];
         let encoder_large = JpegEncoder::new_with_quality(&mut data_large, cfg.photo_quality);
         image_large
             .to_rgb8()
             .write_with_encoder(encoder_large)
             .expect("failed to encode large image as JPEG");
 
-        let mut data_small = Vec::new();
+        let mut data_small = vec![];
         let encoder_small = JpegEncoder::new_with_quality(&mut data_small, cfg.photo_quality);
         image_small
             .to_rgb8()
@@ -169,32 +169,63 @@ impl Photo {
         })
     }
 
-    pub async fn list(db: &Database, post_id: Option<&str>) -> Vec<Photo> {
-        if let Some(post_id) = post_id {
-            sqlx::query(
-                r#"
-                    SELECT photos.id, photos.mark, photos.is_private, photos.source_path, photos.source_time
-                    FROM photos
-                    JOIN posts_photos ON photos.id = posts_photos.photo_id
-                    WHERE posts_photos.post_id = ?;
-                "#,
-            )
-            .bind(post_id)
-        } else {
-            sqlx::query("SELECT id, mark, is_private, source_path, source_time FROM photos")
+    pub async fn list(
+        db: &Database,
+        post_id: Option<&str>,
+        offset: Option<u32>,
+        limit: Option<u32>,
+    ) -> Vec<Photo> {
+        let mut query = r#"
+            SELECT photos.id, photos.mark, photos.is_private, photos.source_path, photos.source_time
+            FROM photos
+            JOIN posts_photos ON photos.id = posts_photos.photo_id
+            JOIN posts ON posts_photos.post_id = posts.id
+        "#
+        .to_string();
+
+        if post_id.is_some() {
+            query.push_str("\nWHERE posts_photos.post_id = ?");
         }
-        .fetch_all(&db.pool)
-        .await
-        .expect("failed to query photos from database")
-        .into_iter()
-        .map(|row| Photo {
-            id: row.get(0),
-            mark: row.get(1),
-            is_private: row.get(2),
-            source_path: row.get(3),
-            source_time: row.get(4),
-        })
-        .collect::<Vec<_>>()
+
+        query.push_str("\nORDER BY posts.date DESC, photos.source_time DESC");
+
+        if let Some(limit) = limit {
+            query.push_str(&format!("\nLIMIT {}", limit));
+        }
+
+        if let Some(offset) = offset {
+            query.push_str(&format!("\nOFFSET {}", offset));
+        }
+
+        query.push(';');
+
+        let mut query = sqlx::query(&query);
+
+        if let Some(post_id) = post_id {
+            query = query.bind(post_id);
+        }
+
+        query
+            .fetch_all(&db.pool)
+            .await
+            .expect("failed to query photos from database")
+            .into_iter()
+            .map(|row| Photo {
+                id: row.get(0),
+                mark: row.get(1),
+                is_private: row.get(2),
+                source_path: row.get(3),
+                source_time: row.get(4),
+            })
+            .collect::<Vec<_>>()
+    }
+
+    pub async fn count(db: &Database) -> u32 {
+        sqlx::query("SELECT COUNT(*) FROM photos;")
+            .fetch_one(&db.pool)
+            .await
+            .expect("failed to count photos in database")
+            .get(0)
     }
 
     pub async fn mark(&self, db: &Database) {
@@ -244,6 +275,85 @@ impl Photo {
             .expect("failed to query image_large_jpg from database")
             .get(0)
     }
+
+    pub async fn get_post(&self, db: &Database) -> Option<Post> {
+        let row = sqlx::query("SELECT post_id FROM posts_photos WHERE photo_id = ?;")
+            .bind(&self.id)
+            .fetch_optional(&db.pool)
+            .await
+            .expect("failed to query post_id from database");
+
+        if let Some(row) = row {
+            Post::by_id(db, row.get(0)).await
+        } else {
+            None
+        }
+    }
+
+    pub async fn to_html(&self, link_url: &str, link_text: &str) -> PreEscaped<String> {
+        html!(
+            div class = "photo-preview" {
+                div {
+                    img class = "photo" src=(format!("/photos/{}?size=small", self.id)) alt = (format!("photo {}", self.id)) {}
+                    a class = "photo-link" href = (link_url) { (link_text) }
+                }
+            }
+        )
+    }
+}
+
+pub async fn get_photos(
+    ax::State(state): ax::State<Arc<AppState>>,
+    ax::Query(params): ax::Query<HashMap<String, String>>,
+) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+    let db = &state.db;
+    let cfg = &state.config;
+
+    let page = params
+        .get("page")
+        .map(|s| s.parse::<u32>().unwrap_or(1))
+        .unwrap_or(1);
+
+    println!("GET photos, page = {}", page);
+
+    let n_photos = Photo::count(db).await;
+    let last_page = n_photos / cfg.photos_per_page + u32::min(1, n_photos % cfg.photos_per_page);
+    let offset = Some((page - 1) * cfg.photos_per_page);
+    let limit = Some(cfg.photos_per_page);
+
+    if page > last_page {
+        return make_error(404, "Page not found");
+    }
+
+    let content = html!(
+        @for photo in Photo::list(db, None, offset, limit).await {
+            (photo.to_html(&format!("/posts/{}/", photo.get_post(db).await.unwrap().id), "↪ to post").await)
+        }
+        section id="photo-navigation" {
+            @if page > 1 {
+                a href="/photos/?page=1" { "<<first" } " "
+                a href=(format!("/photos/?page={}", page - 1)) { "<prev" } " "
+            }
+            "page " (page) " of " (last_page)
+            @if page < last_page {
+                " " a href=(format!("/photos/?page={}", page + 1)) { "next>" }
+                " " a href=(format!("/photos/?page={}", last_page)) { "last>>" }
+            }
+        }
+    );
+
+    let page = make_page(
+        Some("Photos"),
+        "A gallery of all photos.",
+        vec!["/styles/photo.css"],
+        content,
+    );
+
+    (
+        ax::StatusCode::OK,
+        ax::HeaderMap::new(),
+        page.into_string().into(),
+    )
 }
 
 pub async fn get_photo(
@@ -256,14 +366,14 @@ pub async fn get_photo(
     let size = match params.get("size").map(|s| s.as_str()) {
         Some("small") => "small",
         Some("large") => "large",
-        _ => "small",
+        _ => "large",
     };
 
     println!("GET photo {}, size = {}", id, size);
 
     let photo = match Photo::by_id(db, &id).await {
         Some(photo) => photo,
-        None => return (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), Vec::new()),
+        None => return (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), vec![]),
     };
 
     let data = match size {

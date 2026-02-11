@@ -27,13 +27,6 @@ impl File {
         .expect("failed to create files table");
     }
 
-    pub async fn delete_all(db: &Database) {
-        sqlx::query("DELETE FROM files")
-            .execute(&db.pool)
-            .await
-            .expect("failed to delete all files from database");
-    }
-
     pub async fn new(db: &Database, parent_path: &Path, source_path: &Path) -> File {
         let name = source_path
             .file_name()
@@ -65,20 +58,77 @@ impl File {
         }
     }
 
-    pub async fn from_folder(db: &Database, folder_path: &Path) -> Vec<File> {
-        let mut files = Vec::new();
+    pub async fn by_path_and_name(db: &Database, path: &str, name: &str) -> Option<File> {
+        sqlx::query("SELECT id, name, path, data FROM files WHERE path = ? AND name = ?")
+            .bind(path)
+            .bind(name)
+            .fetch_optional(&db.pool)
+            .await
+            .expect("failed to query file from database")
+            .map(|row| File {
+                id: row.get(0),
+                name: row.get(1),
+                path: row.get(2),
+            })
+    }
 
-        for parent in fs::read_dir(folder_path).expect("failed to read files directory") {
-            let parent = parent.unwrap();
-            for entry in fs::read_dir(&parent.path()).expect("failed to read files directory") {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_file() {
-                    let file = File::new(db, &parent.path(), &entry.path()).await;
-                    files.push(file);
-                }
-            }
+    pub async fn get_data(&self, db: &Database) -> Vec<u8> {
+        sqlx::query("SELECT data FROM files WHERE id = ?")
+            .bind(self.id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("failed to query file data from database")
+            .get(0)
+    }
+
+    pub async fn delete_all(db: &Database) {
+        sqlx::query("DELETE FROM files")
+            .execute(&db.pool)
+            .await
+            .expect("failed to delete all files from database");
+    }
+}
+
+pub async fn get_style(
+    ax::State(state): ax::State<Arc<AppState>>,
+    ax::Path(name): ax::Path<String>,
+) -> (ax::StatusCode, ax::HeaderMap, Vec<u8>) {
+    let db = &state.db;
+    println!("GET style {}", name);
+    get(db, "styles", &name).await
+}
+
+pub async fn get_file(
+    ax::State(state): ax::State<Arc<AppState>>,
+    ax::Path(name): ax::Path<String>,
+) -> (ax::StatusCode, ax::HeaderMap, Vec<u8>) {
+    let db = &state.db;
+    println!("GET file {}", name);
+    get(db, "files", &name).await
+}
+
+pub async fn get_asset(
+    ax::State(state): ax::State<Arc<AppState>>,
+    ax::Path(name): ax::Path<String>,
+) -> (ax::StatusCode, ax::HeaderMap, Vec<u8>) {
+    let db = &state.db;
+    println!("GET asset {}", name);
+    get(db, "assets", &name).await
+}
+
+async fn get(db: &Database, path: &str, name: &str) -> (ax::StatusCode, ax::HeaderMap, Vec<u8>) {
+    match File::by_path_and_name(db, path, name).await {
+        Some(file) => {
+            let content_type = mime_guess::from_path(name).first_or_octet_stream();
+
+            let mut header = ax::HeaderMap::new();
+            header.insert(
+                ax::header::CONTENT_TYPE,
+                content_type.to_string().parse().unwrap(),
+            );
+
+            (ax::StatusCode::OK, header, file.get_data(db).await)
         }
-
-        files
+        None => (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), vec![]),
     }
 }

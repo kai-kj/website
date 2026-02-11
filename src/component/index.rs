@@ -27,19 +27,13 @@ pub async fn get_index(
 
         h1 { "Recent posts" }
 
-        @for post in recent_posts {
-            div {
-                h2 { (post.title) }
-                p { (post.description.unwrap_or("".to_string())) }
-                p { (post.date) }
-                a href=(format!("/{}/{}/", cfg.posts_url, post.id)) { "Read more" }
-            }
-        }
+        (make_posts_table(db, None, Some(5), false, true).await)
     };
 
     let page = make_page(
-        "Homepage",
-        "Welcome to the homepage of Kai's personal website.",
+        None,
+        "Kai's personal website.",
+        vec!["/styles/post.css"],
         content,
     );
 

@@ -14,7 +14,7 @@ pub struct Config {
     pub photo_quality: u8,
     pub server_host: String,
     pub server_port: u16,
-    pub posts_url: String,
+    pub photos_per_page: u32,
 }
 
 impl Config {

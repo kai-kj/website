@@ -1,4 +1,3 @@
-use crate::component::error::make_error;
 use crate::prelude::*;
 use rand::random;
 
@@ -23,7 +22,7 @@ impl PostMetadata {
     }
 
     fn to_json_str(&self) -> String {
-        let mut buf = Vec::new();
+        let mut buf = vec![];
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
         let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
         self.serialize(&mut ser)
@@ -86,6 +85,12 @@ impl Post {
             metadata.to_json_file(metadata_path.to_str().unwrap());
         }
 
+        metadata.tags = metadata
+            .tags
+            .iter()
+            .map(|tag| tag.to_lowercase().replace(" ", "_"))
+            .collect();
+
         println!("id: {}", metadata.id.as_ref().unwrap());
         println!("title: {}", metadata.title);
         println!("date: {}", metadata.date);
@@ -113,7 +118,7 @@ impl Post {
         let private_photos_path = source_path.join(&cfg.post_private_photos_path);
 
         if assets_path.exists() {
-            for asset_path in fs::read_dir(assets_path).expect("failed to read assets directory") {
+            for asset_path in fs::read_dir(assets_path).expect("failed to read styles directory") {
                 let asset = Asset::new(db, &asset_path.unwrap().path()).await;
                 sqlx::query("INSERT INTO posts_assets (post_id, asset_id) VALUES (?, ?);")
                     .bind(metadata.id.as_ref().unwrap())
@@ -236,7 +241,7 @@ impl Post {
         .await
         .expect("failed to query posts from database");
 
-        let mut posts = Vec::new();
+        let mut posts = vec![];
 
         for row in rows {
             posts.push(Post {
@@ -267,26 +272,109 @@ pub async fn get_post(
         }
     };
 
-    let mut content = markdown_to_html(&post.get_source(db).await);
-    content.push_str(
-        &html! {
-            @for photo in Photo::list(db, Some(&post.id)).await {
-                img src=(format!("/photos/{}", photo.id)) alt=(format!("photo {}", photo.id)) {}
+    let tags = post.get_tags(db).await;
+
+    let content = html!(
+        section class="post-info" {
+            p { (post.date) }
+            p {
+                @for tag in tags {
+                    a href=(format!("/posts/?tag={}", tag)) { (format!("#{}", tag)) } " ";
+                }
             }
         }
-        .into_string(),
+
+        br{}
+
+        (PreEscaped(markdown_to_html(&post.get_source(db).await)))
+
+        @for photo in Photo::list(db, Some(&post.id), None, None).await {
+            (photo.to_html(&format!("/photos/{}?size=large/", photo.id), "↪ full res").await)
+        }
     );
 
     let page = make_page(
-        &post.title,
+        Some(&post.title),
         &post.description.unwrap_or("".to_string()),
-        &content,
+        vec!["/styles/photo.css", "/styles/post.css"],
+        content,
     );
 
     (
         ax::StatusCode::OK,
         ax::HeaderMap::new(),
         page.into_string().into(),
+    )
+}
+
+pub async fn get_posts(
+    ax::State(state): ax::State<Arc<AppState>>,
+    ax::Query(params): ax::Query<HashMap<String, String>>,
+) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+    let db = &state.db;
+    let tag = params.get("tag").map(|s| s.to_lowercase());
+
+    println!("GET posts, tag: {:?}", tag);
+
+    let content = html! {
+        @if let Some(tag) = tag.as_ref() {
+            section class="post-header" {
+                p { "Only showing posts tagged with " a href=(format!("/posts/?tag={}", tag)) { (format!("#{}", tag)) } " "; }
+                p { a href="/posts/" { "> show all <" } }
+            }
+        }
+
+        (make_posts_table(db, tag, None, false, true).await)
+    };
+
+    let page = make_page(
+        Some("Posts"),
+        "A list of all posts.",
+        vec!["/styles/post.css"],
+        content,
+    );
+
+    (
+        ax::StatusCode::OK,
+        ax::HeaderMap::new(),
+        page.into_string().into(),
+    )
+}
+
+pub async fn make_posts_table(
+    db: &Database,
+    tag: Option<String>,
+    limit: Option<u32>,
+    with_description: bool,
+    with_date: bool,
+) -> PreEscaped<String> {
+    let posts = Post::list(db, limit).await;
+
+    html!(
+        table class="post-table" {
+            @for post in posts {
+                @let tags = post.get_tags(db).await;
+
+                @if tag.is_none() || tags.contains(tag.as_ref().unwrap()) {
+                    tr {
+                        td {
+                            div class="post-title" { a href=(format!("/posts/{}/", post.id)) { (post.title) } }
+                            div class="post-tags" {
+                                @for tag in tags {
+                                    a href=(format!("/posts/?tag={}", tag)) { (format!("#{}", tag)) } " ";
+                                }
+                            }
+                            @if with_description {
+                                div class="post-description" { (post.description.unwrap_or("".to_string())) }
+                            }
+                        }
+                        @if with_date {
+                            td class="post-date" { (post.date) }
+                        }
+                    }
+                }
+            }
+        }
     )
 }
 

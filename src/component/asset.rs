@@ -9,7 +9,7 @@ impl Asset {
     pub async fn setup(db: &Database) {
         sqlx::query(
             r#"
-                CREATE TABLE IF NOT EXISTS assets (
+                CREATE TABLE IF NOT EXISTS styles (
                     id INTEGER PRIMARY KEY,
                     name TEXT NOT NULL,
                     data BLOB NOT NULL
@@ -19,16 +19,16 @@ impl Asset {
                     post_id TEXT NOT NULL,
                     asset_id INTEGER NOT NULL,
                     FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE,
-                    FOREIGN KEY (asset_id) REFERENCES assets (id) ON DELETE CASCADE
+                    FOREIGN KEY (asset_id) REFERENCES styles (id) ON DELETE CASCADE
                 );
 
-                CREATE INDEX IF NOT EXISTS assets_id_index ON assets (id);
-                CREATE INDEX IF NOT EXISTS assets_name_index ON assets (name);
+                CREATE INDEX IF NOT EXISTS assets_id_index ON styles (id);
+                CREATE INDEX IF NOT EXISTS assets_name_index ON styles (name);
             "#,
         )
         .execute(&db.pool)
         .await
-        .expect("failed to create assets table in database");
+        .expect("failed to create styles table in database");
     }
 
     pub async fn new(db: &Database, path: &Path) -> Self {
@@ -39,7 +39,7 @@ impl Asset {
 
         let data = fs::read(path).expect("failed to read asset file");
 
-        let record = sqlx::query("INSERT INTO assets (name, data) VALUES (?, ?) RETURNING id")
+        let record = sqlx::query("INSERT INTO styles (name, data) VALUES (?, ?) RETURNING id")
             .bind(name)
             .bind(data)
             .fetch_one(&db.pool)
@@ -59,10 +59,10 @@ impl Asset {
     ) -> Option<Asset> {
         sqlx::query(
             r#"
-                SELECT assets.id, assets.name
-                FROM assets
-                JOIN posts_assets ON assets.id = posts_assets.asset_id
-                WHERE posts_assets.post_id = ? AND assets.name = ?;
+                SELECT styles.id, styles.name
+                FROM styles
+                JOIN posts_assets ON styles.id = posts_assets.asset_id
+                WHERE posts_assets.post_id = ? AND styles.name = ?;
             "#,
         )
         .bind(post_name)
@@ -77,7 +77,7 @@ impl Asset {
     }
 
     pub async fn get_data(&self, db: &Database) -> Vec<u8> {
-        sqlx::query("SELECT data FROM assets WHERE id = ?;")
+        sqlx::query("SELECT data FROM styles WHERE id = ?;")
             .bind(&self.id)
             .fetch_one(&db.pool)
             .await
@@ -86,10 +86,10 @@ impl Asset {
     }
 
     pub async fn delete_all(db: &Database) {
-        sqlx::query("DELETE FROM assets")
+        sqlx::query("DELETE FROM styles")
             .execute(&db.pool)
             .await
-            .expect("failed to delete all assets from database");
+            .expect("failed to delete all styles from database");
     }
 }
 
@@ -103,7 +103,7 @@ pub async fn get_asset(
 
     let asset = match Asset::by_post_and_name(db, &post, &name).await {
         Some(asset) => asset,
-        None => return (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), Vec::new()),
+        None => return (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), vec![]),
     };
 
     let content_type = mime_guess::from_path(&asset.name).first_or_octet_stream();

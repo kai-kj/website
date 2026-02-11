@@ -1,16 +1,21 @@
 pub mod asset;
+pub mod error;
 pub mod file;
 pub mod index;
 pub mod page;
 pub mod photo;
 pub mod post;
-pub mod error;
+mod project;
 
 pub mod prelude {
-    pub use super::asset::{Asset, get_asset};
-    pub use super::file::File;
+    pub use super::asset::{get_asset, Asset};
+    pub use super::error::{get_error, make_error};
+    pub use super::file::{
+        get_asset as get_file_asset, get_file as get_file_file, get_style as get_file_style, File,
+    };
     pub use super::index::get_index;
     pub use super::page::make_page;
-    pub use super::photo::{Photo, get_photo};
-    pub use super::post::{Post, get_post};
+    pub use super::photo::{get_photo, get_photos, Photo};
+    pub use super::post::{get_post, get_posts, make_posts_table, Post};
+    pub use super::project::get_projects;
 }

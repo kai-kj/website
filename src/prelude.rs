@@ -3,7 +3,7 @@ pub use crate::config::Config;
 pub use crate::database::Database;
 pub use crate::state::AppState;
 
-pub use maud::html;
+pub use maud::{html, PreEscaped};
 pub use serde::{Deserialize, Serialize};
 pub use sqlx::Row;
 pub use std::fs;

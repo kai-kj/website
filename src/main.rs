@@ -35,18 +35,18 @@ async fn build() {
     File::delete_all(&db).await;
     Asset::delete_all(&db).await;
 
-    for post_path in fs::read_dir(&config.posts_path).expect("failed to read posts directory") {
-        Post::new(&db, &config, &post_path.unwrap().path()).await;
-    }
-
-    Photo::delete_unmarked(&db).await;
-
-    for parent in fs::read_dir(config.files_path).expect("failed to read files directory") {
+    for parent in fs::read_dir(&config.files_path).expect("failed to read files directory") {
         let parent = parent.unwrap();
         for entry in fs::read_dir(parent.path()).expect("failed to read files directory") {
             File::new(&db, &parent.path(), &entry.unwrap().path()).await;
         }
     }
+
+    for post_path in fs::read_dir(&config.posts_path).expect("failed to read posts directory") {
+        Post::new(&db, &config, &post_path.unwrap().path()).await;
+    }
+
+    Photo::delete_unmarked(&db).await;
 
     println!("all done!");
 }
@@ -62,9 +62,16 @@ async fn serve() {
 
     let app = ax::Router::new()
         .route("/", ax::routing::get(get_index))
+        .route("/posts/", ax::routing::get(get_posts))
         .route("/posts/{id}/", ax::routing::get(get_post))
         .route("/posts/{id}/assets/{name}", ax::routing::get(get_asset))
+        .route("/photos/", ax::routing::get(get_photos))
         .route("/photos/{id}", ax::routing::get(get_photo))
+        .route("/projects/", ax::routing::get(get_projects))
+        .route("/files/{name}", ax::routing::get(get_file_file))
+        .route("/styles/{name}", ax::routing::get(get_file_style))
+        .route("/assets/{name}", ax::routing::get(get_file_asset))
+        .fallback(ax::routing::get(get_error))
         .with_state(state);
 
     let listener = TcpListener::bind(format!("{}:{}", config.server_host, config.server_port))
