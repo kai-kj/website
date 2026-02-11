@@ -1,6 +1,12 @@
 use crate::prelude::*;
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct UserConfig {
+    pub key: String,
+    pub group: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Config {
     pub database_path: String,
     pub posts_path: String,
@@ -15,6 +21,7 @@ pub struct Config {
     pub server_host: String,
     pub server_port: u16,
     pub photos_per_page: u32,
+    pub users: Vec<UserConfig>,
 }
 
 impl Config {
@@ -23,7 +30,7 @@ impl Config {
     }
 
     pub fn from_json_file(path: &str) -> Config {
-        let json_str = std::fs::read_to_string(path).expect("failed to read configuration file");
+        let json_str = fs::read_to_string(path).expect("failed to read configuration file");
         Config::from_json_str(&json_str)
     }
 }

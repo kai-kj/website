@@ -29,11 +29,17 @@ async fn build() {
     Asset::setup(&db).await;
     Photo::setup(&db).await;
     File::setup(&db).await;
+    User::setup(&db).await;
 
     Post::delete_all(&db).await;
     Photo::unmark_all(&db).await;
     File::delete_all(&db).await;
     Asset::delete_all(&db).await;
+    User::delete_all(&db).await;
+
+    for user in &config.users {
+        User::new(&db, &user.key, &user.group).await;
+    }
 
     for parent in fs::read_dir(&config.files_path).expect("failed to read files directory") {
         let parent = parent.unwrap();
@@ -71,6 +77,9 @@ async fn serve() {
         .route("/files/{name}", ax::routing::get(get_file_file))
         .route("/styles/{name}", ax::routing::get(get_file_style))
         .route("/assets/{name}", ax::routing::get(get_file_asset))
+        .route("/login/", ax::routing::get(get_login))
+        .route("/login/", ax::routing::post(post_login))
+        .route("/logout/", ax::routing::post(post_logout))
         .fallback(ax::routing::get(get_error))
         .with_state(state);
 

@@ -1,5 +1,4 @@
 use crate::prelude::*;
-use rand::random;
 
 #[derive(Serialize, Deserialize)]
 struct PostMetadata {
@@ -80,7 +79,7 @@ impl Post {
         let mut metadata = PostMetadata::from_json_file(metadata_path.to_str().unwrap());
 
         if metadata.id.is_none() {
-            let id: u64 = random();
+            let id: u64 = rand::random();
             metadata.id = Some(format!("{:016x}", id));
             metadata.to_json_file(metadata_path.to_str().unwrap());
         }
@@ -260,26 +259,29 @@ impl Post {
 pub async fn get_post(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path(id): ax::Path<String>,
+    cookie: ax::CookieJar,
 ) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
     let db = &state.db;
+    let user = User::from_cookie(db, &cookie).await;
 
-    println!("GET post {}", id);
+    println!("GET post {}, user = {:?}", id, user);
 
     let post = match Post::by_id(db, &id).await {
         Some(post) => post,
         None => {
-            return make_error(404, "Failed to find post.");
+            return make_error(404, "Failed to find post.", user);
         }
     };
 
     let tags = post.get_tags(db).await;
+    let (photos, n_hidden) = Photo::list(db, user.is_some(), Some(&post.id), None, None).await;
 
     let content = html!(
         section class="post-info" {
             p { (post.date) }
             p {
                 @for tag in tags {
-                    a href=(format!("/posts/?tag={}", tag)) { (format!("#{}", tag)) } " ";
+                    a class="tag" href=(format!("/posts/?tag={}", tag)) { code { (format!("#{}", tag)) } } " ";
                 }
             }
         }
@@ -288,8 +290,12 @@ pub async fn get_post(
 
         (PreEscaped(markdown_to_html(&post.get_source(db).await)))
 
-        @for photo in Photo::list(db, Some(&post.id), None, None).await {
+        @for photo in photos {
             (photo.to_html(&format!("/photos/{}?size=large/", photo.id), "↪ full res").await)
+        }
+
+        @if n_hidden > 0 {
+            p id="hidden-message" { "(" (n_hidden) " photos hidden, " a href="/login/" { "log in" } " to see all)" }
         }
     );
 
@@ -298,6 +304,7 @@ pub async fn get_post(
         &post.description.unwrap_or("".to_string()),
         vec!["/styles/photo.css", "/styles/post.css"],
         content,
+        user,
     );
 
     (
@@ -310,16 +317,18 @@ pub async fn get_post(
 pub async fn get_posts(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
+    cookie: ax::CookieJar,
 ) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
     let db = &state.db;
     let tag = params.get("tag").map(|s| s.to_lowercase());
+    let user = User::from_cookie(db, &cookie).await;
 
-    println!("GET posts, tag: {:?}", tag);
+    println!("GET posts, tag: {:?}, user = {:?}", tag, user);
 
     let content = html! {
         @if let Some(tag) = tag.as_ref() {
             section class="post-header" {
-                p { "Only showing posts tagged with " a href=(format!("/posts/?tag={}", tag)) { (format!("#{}", tag)) } " "; }
+                p { "Only showing posts tagged with " a class="tag" href=(format!("/posts/?tag={}", tag)) { code { (format!("#{}", tag)) } } }
                 p { a href="/posts/" { "> show all <" } }
             }
         }
@@ -332,6 +341,7 @@ pub async fn get_posts(
         "A list of all posts.",
         vec!["/styles/post.css"],
         content,
+        user,
     );
 
     (
@@ -358,10 +368,12 @@ pub async fn make_posts_table(
                 @if tag.is_none() || tags.contains(tag.as_ref().unwrap()) {
                     tr {
                         td {
-                            div class="post-title" { a href=(format!("/posts/{}/", post.id)) { (post.title) } }
+                            div class="post-title" {
+                                a href=(format!("/posts/{}/", post.id))  { (post.title) }
+                            }
                             div class="post-tags" {
                                 @for tag in tags {
-                                    a href=(format!("/posts/?tag={}", tag)) { (format!("#{}", tag)) } " ";
+                                    a class="tag" href=(format!("/posts/?tag={}", tag)) { code { (format!("#{}", tag)) } } " ";
                                 }
                             }
                             @if with_description {
@@ -385,3 +397,13 @@ fn markdown_to_html(markdown: &str) -> String {
     comrak::format_html(root, &comrak::Options::default(), &mut content).unwrap();
     content
 }
+
+// fn next_color(prev_color: &mut Option<u32>) -> u32 {
+//     loop {
+//         let color = (rand::random::<u32>() % 10) + 1;
+//         if prev_color.is_none() || color != prev_color.unwrap() {
+//             *prev_color = Some(color);
+//             return color;
+//         }
+//     }
+// }

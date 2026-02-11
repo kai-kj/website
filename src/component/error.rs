@@ -1,6 +1,10 @@
 use crate::prelude::*;
 
-pub fn make_error(code: u16, message: &str) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+pub fn make_error(
+    code: u16,
+    message: &str,
+    user: Option<User>,
+) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
     let title = format!("{}", code);
     let message = format!("Error {}: {}", code, message);
 
@@ -11,7 +15,13 @@ pub fn make_error(code: u16, message: &str) -> (ax::StatusCode, ax::HeaderMap, a
         }
     };
 
-    let page = make_page(Some(&title), &message, vec!["/styles/error.css"], content);
+    let page = make_page(
+        Some(&title),
+        &message,
+        vec!["/styles/error.css"],
+        content,
+        user,
+    );
 
     (
         ax::StatusCode::from_u16(code).unwrap(),
@@ -21,13 +31,21 @@ pub fn make_error(code: u16, message: &str) -> (ax::StatusCode, ax::HeaderMap, a
 }
 
 pub async fn get_error(
+    ax::State(state): ax::State<Arc<AppState>>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
+    cookies: ax::CookieJar,
 ) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+    let db = &state.db;
+
     let code = params
         .get("code")
         .unwrap_or(&"404".to_string())
         .parse::<u16>()
         .unwrap();
 
-    make_error(code, "Not found")
+    let user = User::from_cookie(db, &cookies).await;
+    
+    println!("GET error {}, user = {:?}", code, user);
+
+    make_error(code, "Not found", user)
 }

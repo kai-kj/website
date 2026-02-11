@@ -7,10 +7,10 @@ pub fn make_page(
     description: &str,
     additional_styles: Vec<&str>,
     content: impl Into<String>,
+    user: Option<User>,
 ) -> Markup {
     html! {
         (DOCTYPE)
-
         html {
             head {
                 @if let Some(title) = title {
@@ -22,7 +22,7 @@ pub fn make_page(
                 meta name="viewport" content="width=device-width, initial-scale=1" {}
                 link rel="icon" href="/assets/logo.jpg" {}
                 link rel="stylesheet" href="/styles/page.css" {}
-                 @for additional_style in additional_styles {
+                @for additional_style in additional_styles {
                     link rel="stylesheet" href=(additional_style) {}
                 }
             }
@@ -40,6 +40,13 @@ pub fn make_page(
                         a href="/posts/" { "Posts" }
                         a href="/projects/" { "Projects" }
                         a href="/photos/" { "Photos" }
+                        @if user.is_some() {
+                            form action="/logout/" method="post" {
+                                input type="submit" value="Logout" {}
+                            }
+                        } @else {
+                            a href="/login/" { "Login" }
+                        }
                     }
                 }
 

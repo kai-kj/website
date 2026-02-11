@@ -5,7 +5,8 @@ pub mod index;
 pub mod page;
 pub mod photo;
 pub mod post;
-mod project;
+pub mod project;
+pub mod user;
 
 pub mod prelude {
     pub use super::asset::{get_asset, Asset};
@@ -18,4 +19,5 @@ pub mod prelude {
     pub use super::photo::{get_photo, get_photos, Photo};
     pub use super::post::{get_post, get_posts, make_posts_table, Post};
     pub use super::project::get_projects;
+    pub use super::user::{get_login, post_login, post_logout, User};
 }

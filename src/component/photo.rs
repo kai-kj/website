@@ -171,10 +171,11 @@ impl Photo {
 
     pub async fn list(
         db: &Database,
+        include_private: bool,
         post_id: Option<&str>,
         offset: Option<u32>,
         limit: Option<u32>,
-    ) -> Vec<Photo> {
+    ) -> (Vec<Photo>, u32) {
         let mut query = r#"
             SELECT photos.id, photos.mark, photos.is_private, photos.source_path, photos.source_time
             FROM photos
@@ -199,13 +200,15 @@ impl Photo {
 
         query.push(';');
 
+        println!("{}", query);
+
         let mut query = sqlx::query(&query);
 
         if let Some(post_id) = post_id {
             query = query.bind(post_id);
         }
 
-        query
+        let all_photos = query
             .fetch_all(&db.pool)
             .await
             .expect("failed to query photos from database")
@@ -217,7 +220,18 @@ impl Photo {
                 source_path: row.get(3),
                 source_time: row.get(4),
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        let all_photos_len = all_photos.len();
+
+        let photos = all_photos
+            .into_iter()
+            .filter(|photo| !photo.is_private || include_private)
+            .collect::<Vec<_>>();
+
+        let photos_len = photos.len();
+
+        (photos, (all_photos_len - photos_len) as u32)
     }
 
     pub async fn count(db: &Database) -> u32 {
@@ -305,16 +319,18 @@ impl Photo {
 pub async fn get_photos(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
+    cookies: ax::CookieJar,
 ) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
     let db = &state.db;
     let cfg = &state.config;
+    let user = User::from_cookie(db, &cookies).await;
 
     let page = params
         .get("page")
         .map(|s| s.parse::<u32>().unwrap_or(1))
         .unwrap_or(1);
 
-    println!("GET photos, page = {}", page);
+    println!("GET photos, page = {}, user = {:?}", page, user);
 
     let n_photos = Photo::count(db).await;
     let last_page = n_photos / cfg.photos_per_page + u32::min(1, n_photos % cfg.photos_per_page);
@@ -322,11 +338,13 @@ pub async fn get_photos(
     let limit = Some(cfg.photos_per_page);
 
     if page > last_page {
-        return make_error(404, "Page not found");
+        return make_error(404, "Page not found", user);
     }
 
+    let (photos, _) = Photo::list(db, user.is_some(), None, offset, limit).await;
+
     let content = html!(
-        @for photo in Photo::list(db, None, offset, limit).await {
+        @for photo in photos {
             (photo.to_html(&format!("/posts/{}/", photo.get_post(db).await.unwrap().id), "↪ to post").await)
         }
         section id="photo-navigation" {
@@ -347,6 +365,7 @@ pub async fn get_photos(
         "A gallery of all photos.",
         vec!["/styles/photo.css"],
         content,
+        user,
     );
 
     (
@@ -360,8 +379,10 @@ pub async fn get_photo(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path(id): ax::Path<String>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
+    cookie: ax::CookieJar,
 ) -> (ax::StatusCode, ax::HeaderMap, Vec<u8>) {
     let db = &state.db;
+    let user = User::from_cookie(db, &cookie).await;
 
     let size = match params.get("size").map(|s| s.as_str()) {
         Some("small") => "small",
@@ -369,12 +390,16 @@ pub async fn get_photo(
         _ => "large",
     };
 
-    println!("GET photo {}, size = {}", id, size);
+    println!("GET photo {}, size = {}, user = {:?}", id, size, user);
 
     let photo = match Photo::by_id(db, &id).await {
         Some(photo) => photo,
         None => return (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), vec![]),
     };
+
+    if photo.is_private && user.is_none() {
+        return (ax::StatusCode::FORBIDDEN, ax::HeaderMap::new(), vec![]);
+    }
 
     let data = match size {
         "small" => photo.get_image_small(db).await,

@@ -28,7 +28,7 @@ impl Asset {
         )
         .execute(&db.pool)
         .await
-        .expect("failed to create styles table in database");
+        .expect("failed to create styles table");
     }
 
     pub async fn new(db: &Database, path: &Path) -> Self {

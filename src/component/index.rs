@@ -2,13 +2,12 @@ use crate::prelude::*;
 
 pub async fn get_index(
     ax::State(state): ax::State<Arc<AppState>>,
+    cookies: ax::CookieJar,
 ) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
     let db = &state.db;
-    let cfg = &state.config;
+    let user = User::from_cookie(db, &cookies).await;
 
-    println!("GET index");
-
-    let recent_posts = Post::list(db, Some(5)).await;
+    println!("GET index, user = {:?}", user);
 
     let content = html! {
         h1 { "About me" }
@@ -35,6 +34,7 @@ pub async fn get_index(
         "Kai's personal website.",
         vec!["/styles/post.css"],
         content,
+        user,
     );
 
     (
