@@ -34,6 +34,7 @@ impl PostMetadata {
     }
 }
 
+#[allow(dead_code)]
 pub struct Post {
     pub id: String,
     pub title: String,
@@ -67,6 +68,16 @@ impl Post {
         .execute(&db.pool)
         .await
         .expect("failed to create posts table");
+    }
+
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
+        Self {
+            id: row.get(0),
+            title: row.get(1),
+            description: row.get(2),
+            date: row.get(3),
+            permalink: row.get(4),
+        }
     }
 
     pub async fn new(db: &Database, cfg: &Config, source_path: &Path) -> Post {
@@ -160,24 +171,28 @@ impl Post {
     }
 
     pub async fn by_id(db: &Database, id: &str) -> Option<Post> {
+        sqlx::query("SELECT id, title, description, date, permalink FROM posts WHERE id = ?;")
+            .bind(id)
+            .fetch_optional(&db.pool)
+            .await
+            .expect("failed to query photo by source path from database")
+            .as_ref()
+            .map(Post::from_row)
+    }
+
+    pub async fn by_permalink(db: &Database, permalink: &str) -> Option<Post> {
         sqlx::query(
             r#"
                 SELECT id, title, description, date, permalink
-                FROM posts
-                WHERE id = ?;
+                FROM posts WHERE permalink = ?;
             "#,
         )
-        .bind(id)
+        .bind(permalink)
         .fetch_optional(&db.pool)
         .await
-        .expect("failed to query photo by source path from database")
-        .map(|row| Post {
-            id: row.get(0),
-            title: row.get(1),
-            description: row.get(2),
-            date: row.get(3),
-            permalink: row.get(4),
-        })
+        .expect("failed to query post id by permalink from database")
+        .as_ref()
+        .map(Post::from_row)
     }
 
     pub async fn delete_all(db: &Database) {
@@ -227,7 +242,7 @@ impl Post {
     pub async fn list(db: &Database, limit: Option<u32>) -> Vec<Post> {
         let limit = limit.unwrap_or(10000);
 
-        let rows = sqlx::query(
+        sqlx::query(
             r#"
                 SELECT id, title, description, date, permalink
                 FROM posts
@@ -238,21 +253,10 @@ impl Post {
         .bind(limit)
         .fetch_all(&db.pool)
         .await
-        .expect("failed to query posts from database");
-
-        let mut posts = vec![];
-
-        for row in rows {
-            posts.push(Post {
-                id: row.get(0),
-                title: row.get(1),
-                description: row.get(2),
-                date: row.get(3),
-                permalink: row.get(4),
-            });
-        }
-
-        posts
+        .expect("failed to query posts from database")
+        .iter()
+        .map(Post::from_row)
+        .collect()
     }
 }
 
@@ -260,7 +264,7 @@ pub async fn get_post(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path(id): ax::Path<String>,
     cookie: ax::CookieJar,
-) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+) -> impl IntoResponse {
     let db = &state.db;
     let user = User::from_cookie(db, &cookie).await;
 
@@ -269,7 +273,10 @@ pub async fn get_post(
     let post = match Post::by_id(db, &id).await {
         Some(post) => post,
         None => {
-            return make_error(404, "Failed to find post.", user);
+            return match Post::by_permalink(db, &id).await {
+                Some(post) => ax::Redirect::to(&format!("/posts/{}/", post.id)).into_response(),
+                None => make_error(404, "Failed to find post.", user).into_response(),
+            };
         }
     };
 
@@ -307,18 +314,14 @@ pub async fn get_post(
         user,
     );
 
-    (
-        ax::StatusCode::OK,
-        ax::HeaderMap::new(),
-        page.into_string().into(),
-    )
+    ax::Html::from(page.into_string()).into_response()
 }
 
 pub async fn get_posts(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
     cookie: ax::CookieJar,
-) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+) -> impl IntoResponse {
     let db = &state.db;
     let tag = params.get("tag").map(|s| s.to_lowercase());
     let user = User::from_cookie(db, &cookie).await;
@@ -344,11 +347,7 @@ pub async fn get_posts(
         user,
     );
 
-    (
-        ax::StatusCode::OK,
-        ax::HeaderMap::new(),
-        page.into_string().into(),
-    )
+    ax::Html::from(page.into_string()).into_response()
 }
 
 pub async fn make_posts_table(

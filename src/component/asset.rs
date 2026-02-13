@@ -31,6 +31,13 @@ impl Asset {
         .expect("failed to create styles table");
     }
 
+    fn from_row(row: sqlx::sqlite::SqliteRow) -> Self {
+        Self {
+            id: row.get(0),
+            name: row.get(1),
+        }
+    }
+
     pub async fn new(db: &Database, path: &Path) -> Self {
         let name = path
             .file_name()
@@ -70,15 +77,12 @@ impl Asset {
         .fetch_optional(&db.pool)
         .await
         .expect("failed to query asset by post name and asset name from database")
-        .map(|row| Asset {
-            id: row.get(0),
-            name: row.get(1),
-        })
+        .map(Asset::from_row)
     }
 
     pub async fn get_data(&self, db: &Database) -> Vec<u8> {
         sqlx::query("SELECT data FROM styles WHERE id = ?;")
-            .bind(&self.id)
+            .bind(self.id)
             .fetch_one(&db.pool)
             .await
             .expect("failed to query data from database")
@@ -96,23 +100,22 @@ impl Asset {
 pub async fn get_asset(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path((post, name)): ax::Path<(String, String)>,
-) -> (ax::StatusCode, ax::HeaderMap, Vec<u8>) {
+) -> impl IntoResponse {
     let db = &state.db;
 
     println!("GET asset {}/{}", post, name);
 
     let asset = match Asset::by_post_and_name(db, &post, &name).await {
         Some(asset) => asset,
-        None => return (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), vec![]),
+        None => return ax::StatusCode::NOT_FOUND.into_response(),
     };
 
     let content_type = mime_guess::from_path(&asset.name).first_or_octet_stream();
 
-    let mut header = ax::HeaderMap::new();
-    header.insert(
+    let header = ax::HeaderMap::from_iter(vec![(
         ax::header::CONTENT_TYPE,
         content_type.to_string().parse().unwrap(),
-    );
+    )]);
 
-    (ax::StatusCode::OK, header, asset.get_data(db).await)
+    (header, asset.get_data(db).await).into_response()
 }

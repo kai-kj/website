@@ -3,6 +3,7 @@ pub use crate::config::Config;
 pub use crate::database::Database;
 pub use crate::state::AppState;
 
+pub use axum::response::IntoResponse;
 pub use maud::{html, PreEscaped};
 pub use serde::{Deserialize, Serialize};
 pub use sqlx::Row;
@@ -12,7 +13,7 @@ pub use std::path::Path;
 pub use std::sync::Arc;
 
 pub mod ax {
-    pub use axum::extract::{Path, Query, State};
+    pub use axum::extract::{Path, Query, Request, State};
     pub use axum::http::header;
     pub use axum::http::{HeaderMap, StatusCode};
     pub use axum::response::{Html, Redirect};

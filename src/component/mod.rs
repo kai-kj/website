@@ -10,7 +10,7 @@ pub mod user;
 
 pub mod prelude {
     pub use super::asset::{get_asset, Asset};
-    pub use super::error::{get_error, make_error};
+    pub use super::error::{get_not_found, make_error};
     pub use super::file::{
         get_asset as get_file_asset, get_file as get_file_file, get_style as get_file_style, File,
     };

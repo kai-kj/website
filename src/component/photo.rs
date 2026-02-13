@@ -4,6 +4,7 @@ use crate::prelude::*;
 use image::codecs::jpeg::JpegEncoder;
 use image::ImageReader;
 
+#[allow(dead_code)]
 pub struct Photo {
     pub id: String,
     pub mark: bool,
@@ -40,6 +41,16 @@ impl Photo {
         .execute(&db.pool)
         .await
         .expect("failed to create photos table");
+    }
+
+    fn from_row(row: sqlx::sqlite::SqliteRow) -> Self {
+        Self {
+            id: row.get(0),
+            mark: row.get(1),
+            is_private: row.get(2),
+            source_path: row.get(3),
+            source_time: row.get(4),
+        }
     }
 
     pub async fn new(db: &Database, cfg: &Config, source_path: &Path, is_private: bool) -> Photo {
@@ -112,15 +123,15 @@ impl Photo {
                     RETURNING id
                 "#
         )
-        .bind(&id)
-        .bind(is_private)
-        .bind(source_path)
-        .bind(source_time)
-        .bind(data_large)
-        .bind(data_small)
-        .execute(&db.pool)
-        .await
-        .expect("failed to insert photo into database");
+            .bind(&id)
+            .bind(is_private)
+            .bind(source_path)
+            .bind(source_time)
+            .bind(data_large)
+            .bind(data_small)
+            .execute(&db.pool)
+            .await
+            .expect("failed to insert photo into database");
 
         Self::by_id(db, &id).await.unwrap()
     }
@@ -137,13 +148,7 @@ impl Photo {
         .fetch_optional(&db.pool)
         .await
         .expect("failed to query photo by source path from database")
-        .map(|row| Photo {
-            id: row.get(0),
-            mark: row.get(1),
-            is_private: row.get(2),
-            source_path: row.get(3),
-            source_time: row.get(4),
-        })
+        .map(Photo::from_row)
     }
 
     pub async fn by_path(db: &Database, source_path: &Path) -> Option<Photo> {
@@ -160,13 +165,7 @@ impl Photo {
         .fetch_optional(&db.pool)
         .await
         .expect("failed to query photo by source path from database")
-        .map(|row| Photo {
-            id: row.get(0),
-            mark: row.get(1),
-            is_private: row.get(2),
-            source_path: row.get(3),
-            source_time: row.get(4),
-        })
+        .map(Photo::from_row)
     }
 
     pub async fn list(
@@ -200,8 +199,6 @@ impl Photo {
 
         query.push(';');
 
-        println!("{}", query);
-
         let mut query = sqlx::query(&query);
 
         if let Some(post_id) = post_id {
@@ -213,13 +210,7 @@ impl Photo {
             .await
             .expect("failed to query photos from database")
             .into_iter()
-            .map(|row| Photo {
-                id: row.get(0),
-                mark: row.get(1),
-                is_private: row.get(2),
-                source_path: row.get(3),
-                source_time: row.get(4),
-            })
+            .map(Photo::from_row)
             .collect::<Vec<_>>();
 
         let all_photos_len = all_photos.len();
@@ -320,7 +311,7 @@ pub async fn get_photos(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
     cookies: ax::CookieJar,
-) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+) -> impl IntoResponse {
     let db = &state.db;
     let cfg = &state.config;
     let user = User::from_cookie(db, &cookies).await;
@@ -338,7 +329,7 @@ pub async fn get_photos(
     let limit = Some(cfg.photos_per_page);
 
     if page > last_page {
-        return make_error(404, "Page not found", user);
+        return make_error(404, "Page not found", user).into_response();
     }
 
     let (photos, _) = Photo::list(db, user.is_some(), None, offset, limit).await;
@@ -368,11 +359,7 @@ pub async fn get_photos(
         user,
     );
 
-    (
-        ax::StatusCode::OK,
-        ax::HeaderMap::new(),
-        page.into_string().into(),
-    )
+    ax::Html::from(page.into_string()).into_response()
 }
 
 pub async fn get_photo(
@@ -380,7 +367,7 @@ pub async fn get_photo(
     ax::Path(id): ax::Path<String>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
     cookie: ax::CookieJar,
-) -> (ax::StatusCode, ax::HeaderMap, Vec<u8>) {
+) -> impl IntoResponse {
     let db = &state.db;
     let user = User::from_cookie(db, &cookie).await;
 
@@ -394,11 +381,11 @@ pub async fn get_photo(
 
     let photo = match Photo::by_id(db, &id).await {
         Some(photo) => photo,
-        None => return (ax::StatusCode::NOT_FOUND, ax::HeaderMap::new(), vec![]),
+        None => return ax::StatusCode::NOT_FOUND.into_response(),
     };
 
     if photo.is_private && user.is_none() {
-        return (ax::StatusCode::FORBIDDEN, ax::HeaderMap::new(), vec![]);
+        return ax::StatusCode::FORBIDDEN.into_response();
     }
 
     let data = match size {
@@ -413,5 +400,5 @@ pub async fn get_photo(
         mime::IMAGE_JPEG.to_string().parse().unwrap(),
     );
 
-    (ax::StatusCode::OK, header, data)
+    (header, data).into_response()
 }

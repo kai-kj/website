@@ -1,7 +1,7 @@
 use crate::prelude::*;
-use std::fmt::Formatter;
 use std::hash::{Hash, Hasher};
 
+#[allow(dead_code)]
 pub struct User {
     pub key_hash: String,
     pub group_name: String,
@@ -20,6 +20,13 @@ impl User {
         .execute(&db.pool)
         .await
         .expect("failed to create users table");
+    }
+
+    fn from_row(row: sqlx::sqlite::SqliteRow) -> Self {
+        Self {
+            key_hash: row.get(0),
+            group_name: row.get(1),
+        }
     }
 
     pub async fn new(db: &Database, key_hash: &str, group_name: &str) -> Self {
@@ -62,10 +69,7 @@ impl User {
         .fetch_optional(&db.pool)
         .await
         .expect("failed to query user by password from database")
-        .map(|row| User {
-            key_hash: row.get(0),
-            group_name: row.get(1),
-        })
+        .map(User::from_row)
     }
 
     pub async fn delete_all(db: &Database) {
@@ -89,7 +93,7 @@ impl std::fmt::Display for User {
 }
 
 impl std::fmt::Debug for User {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "User(\"{}\")", self.group_name)
     }
 }
@@ -98,7 +102,7 @@ pub async fn get_login(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Query(params): ax::Query<HashMap<String, String>>,
     cookie: ax::CookieJar,
-) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+) -> impl IntoResponse {
     let db = &state.db;
     let user = User::from_cookie(db, &cookie).await;
     let failed = if let Some(failed) = params.get("failed") {
@@ -128,11 +132,7 @@ pub async fn get_login(
         user,
     );
 
-    (
-        ax::StatusCode::OK,
-        ax::HeaderMap::new(),
-        page.into_string().into(),
-    )
+    ax::Html::from(page.into_string()).into_response()
 }
 
 #[derive(Deserialize, Debug)]
@@ -143,7 +143,7 @@ pub struct LoginForm {
 pub async fn post_login(
     ax::State(state): ax::State<Arc<AppState>>,
     form: ax::Form<LoginForm>,
-) -> (ax::CookieJar, ax::Redirect) {
+) -> impl IntoResponse {
     let db = &state.db;
 
     let hash = User::key_hash(&form.key);
@@ -155,19 +155,18 @@ pub async fn post_login(
             ax::CookieJar::new().add(ax::Cookie::build(("key", hash)).path("/")),
             ax::Redirect::to("/"),
         )
+            .into_response()
     } else {
         println!("POST login, invalid key");
-        (
-            ax::CookieJar::new(),
-            ax::Redirect::to("/login/?failed=true"),
-        )
+        ax::Redirect::to("/login/?failed=true").into_response()
     }
 }
 
-pub async fn post_logout(cookie: ax::CookieJar) -> (ax::CookieJar, ax::Redirect) {
+pub async fn post_logout(cookie: ax::CookieJar) -> impl IntoResponse {
     println!("POST logout");
     (
         cookie.add(ax::Cookie::build("key").path("/").removal().build()),
         ax::Redirect::to("/"),
     )
+        .into_response()
 }

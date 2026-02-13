@@ -80,7 +80,7 @@ async fn serve() {
         .route("/login/", ax::routing::get(get_login))
         .route("/login/", ax::routing::post(post_login))
         .route("/logout/", ax::routing::post(post_logout))
-        .fallback(ax::routing::get(get_error))
+        .fallback(ax::routing::get(get_not_found))
         .with_state(state);
 
     let listener = TcpListener::bind(format!("{}:{}", config.server_host, config.server_port))
@@ -96,3 +96,7 @@ async fn serve() {
         .await
         .expect("failed to start server");
 }
+
+// fn make_redirect(path: &str) -> axum::routing::MethodRouter<Arc<AppState>> {
+//     ax::routing::get(async || ax::Redirect::to("/photos/"))
+// }

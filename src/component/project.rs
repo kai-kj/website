@@ -3,9 +3,9 @@ use crate::prelude::*;
 pub async fn get_projects(
     ax::State(state): ax::State<Arc<AppState>>,
     cookie: ax::CookieJar,
-) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+) -> impl IntoResponse {
     let db = &state.db;
-    let user = User::from_cookie(&db, &cookie).await;
+    let user = User::from_cookie(db, &cookie).await;
 
     println!("GET projects, user = {:?}", user);
 
@@ -21,9 +21,5 @@ pub async fn get_projects(
         user,
     );
 
-    (
-        ax::StatusCode::OK,
-        ax::HeaderMap::new(),
-        page.into_string().into(),
-    )
+    ax::Html::from(page.into_string()).into_response()
 }

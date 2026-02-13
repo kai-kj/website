@@ -3,7 +3,7 @@ use crate::prelude::*;
 pub async fn get_index(
     ax::State(state): ax::State<Arc<AppState>>,
     cookies: ax::CookieJar,
-) -> (ax::StatusCode, ax::HeaderMap, ax::Html<String>) {
+) -> impl IntoResponse {
     let db = &state.db;
     let user = User::from_cookie(db, &cookies).await;
 
@@ -37,9 +37,5 @@ pub async fn get_index(
         user,
     );
 
-    (
-        ax::StatusCode::OK,
-        ax::HeaderMap::new(),
-        page.into_string().into(),
-    )
+    ax::Html::from(page.into_string()).into_response()
 }
