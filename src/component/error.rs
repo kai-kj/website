@@ -25,24 +25,14 @@ pub fn make_error(code: u16, message: &str, user: Option<User>) -> impl IntoResp
 
 pub async fn get_not_found(
     ax::State(state): ax::State<Arc<AppState>>,
-    request: ax::Request,
+    uri: ax::Uri,
+    ax::Query(params): ax::Query<HashMap<String, String>>,
+    cookie: ax::CookieJar,
 ) -> impl IntoResponse {
     let db = &state.db;
 
-    let cookies = request
-        .extensions()
-        .get::<ax::CookieJar>()
-        .cloned()
-        .unwrap_or(ax::CookieJar::new());
-
-    let params = request
-        .extensions()
-        .get()
-        .cloned()
-        .unwrap_or(ax::Query::<HashMap<String, String>>::default());
-
-    let user = User::from_cookie(db, &cookies).await;
-    let path = request.uri().path();
+    let uri = uri.path();
+    let user = User::from_cookie(db, &cookie).await;
     let code = params
         .get("code")
         .unwrap_or(&"404".to_string())
@@ -51,9 +41,9 @@ pub async fn get_not_found(
 
     println!("GET error {}, user = {:?}", code, user);
 
-    if !path.ends_with('/') && code == 404 {
-        println!("  redirecting with trailing slash");
-        return ax::Redirect::to(&format!("{}/", path)).into_response();
+    if !uri.ends_with('/') && code == 404 {
+        println!("redirecting with trailing slash");
+        return ax::Redirect::to(&format!("{}/", uri)).into_response();
     }
 
     make_error(code, "Not found", user).into_response()

@@ -13,9 +13,9 @@ pub use std::path::Path;
 pub use std::sync::Arc;
 
 pub mod ax {
-    pub use axum::extract::{Path, Query, Request, State};
+    pub use axum::extract::{Path, Query, State};
     pub use axum::http::header;
-    pub use axum::http::{HeaderMap, StatusCode};
+    pub use axum::http::{HeaderMap, StatusCode, Uri};
     pub use axum::response::{Html, Redirect};
     pub use axum::routing;
     pub use axum::Form;
