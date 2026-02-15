@@ -1,3 +1,4 @@
+use crate::database::SqliteError;
 use crate::prelude::*;
 
 #[allow(dead_code)]
@@ -8,8 +9,8 @@ pub struct File {
 }
 
 impl File {
-    pub async fn setup(db: &Database) {
-        sqlx::query(
+    pub fn setup(db: &Database) -> Result<(), Error> {
+        db.execute_batch(
             r#"
                 CREATE TABLE IF NOT EXISTS files (
                     id INTEGER PRIMARY KEY,
@@ -23,74 +24,58 @@ impl File {
                 CREATE INDEX IF NOT EXISTS files_path_index ON files (path);
             "#,
         )
-        .execute(&db.pool)
-        .await
-        .expect("failed to create files table");
+        .context("failed to create files table")
     }
 
-    fn from_row(row: sqlx::sqlite::SqliteRow) -> Self {
-        Self {
-            id: row.get(0),
-            name: row.get(1),
-            path: row.get(2),
-        }
+    fn from_row(row: &Row) -> Result<Self, SqliteError> {
+        Ok(Self {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            path: row.get(2)?,
+        })
     }
 
-    pub async fn new(db: &Database, parent_path: &Path, source_path: &Path) -> File {
+    pub fn new(db: &Database, parent_path: &Path, source_path: &Path) -> Result<File, Error> {
         let name = source_path
             .file_name()
             .and_then(|n| n.to_str())
-            .expect("invalid file path");
+            .context("invalid file path")?;
 
         let path = parent_path
             .iter()
             .next_back()
-            .expect("invalid file path")
-            .to_str()
-            .unwrap();
+            .context("invalid file path")?
+            .to_str();
 
-        let data = fs::read(source_path).expect("failed to read file");
+        let data = fs::read(source_path).context("failed to read file")?;
 
-        let record =
-            sqlx::query("INSERT INTO files (name, path, data) VALUES (?, ?, ?) RETURNING id")
-                .bind(name)
-                .bind(path)
-                .bind(data)
-                .fetch_one(&db.pool)
-                .await
-                .expect("failed to insert file into database");
-
-        File {
-            id: record.get(0),
-            name: name.to_string(),
-            path: path.to_string(),
-        }
+        db.query_one(
+            "INSERT INTO files (name, path, data) VALUES (?, ?, ?) RETURNING id, name, path",
+            (name, path, data),
+            File::from_row,
+        )
+        .context("failed to insert file into database")
     }
 
-    pub async fn by_path_and_name(db: &Database, path: &str, name: &str) -> Option<File> {
-        sqlx::query("SELECT id, name, path, data FROM files WHERE path = ? AND name = ?")
-            .bind(path)
-            .bind(name)
-            .fetch_optional(&db.pool)
-            .await
-            .expect("failed to query file from database")
-            .map(File::from_row)
+    pub fn by_path_and_name(db: &Database, path: &str, name: &str) -> Result<File, Error> {
+        db.query_one(
+            "SELECT id, name, path, data FROM files WHERE path = ? AND name = ?",
+            (path, name),
+            File::from_row,
+        )
+        .context("failed to query file from database")
     }
 
-    pub async fn get_data(&self, db: &Database) -> Vec<u8> {
-        sqlx::query("SELECT data FROM files WHERE id = ?")
-            .bind(self.id)
-            .fetch_one(&db.pool)
-            .await
-            .expect("failed to query file data from database")
-            .get(0)
+    pub fn get_data(&self, db: &Database) -> Result<Vec<u8>, Error> {
+        db.query_one("SELECT data FROM files WHERE id = ?", [self.id], |row| {
+            row.get(0)
+        })
+        .context("failed to query file data from database")
     }
 
-    pub async fn delete_all(db: &Database) {
-        sqlx::query("DELETE FROM files")
-            .execute(&db.pool)
-            .await
-            .expect("failed to delete all files from database");
+    pub fn delete_all(db: &Database) -> Result<(), Error> {
+        db.execute("DELETE FROM files", [])
+            .context("failed to delete all files from database")
     }
 }
 
@@ -98,32 +83,32 @@ pub async fn get_style(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path(name): ax::Path<String>,
 ) -> impl IntoResponse {
-    let db = &state.db;
+    let db = &state.db.lock().unwrap();
     println!("GET style {}", name);
-    get(db, "styles", &name).await.into_response()
+    get(db, "styles", &name).into_response()
 }
 
 pub async fn get_file(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path(name): ax::Path<String>,
 ) -> impl IntoResponse {
-    let db = &state.db;
+    let db = &state.db.lock().unwrap();
     println!("GET file {}", name);
-    get(db, "files", &name).await.into_response()
+    get(db, "files", &name).into_response()
 }
 
 pub async fn get_asset(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path(name): ax::Path<String>,
 ) -> impl IntoResponse {
-    let db = &state.db;
+    let db = &state.db.lock().unwrap();
     println!("GET asset {}", name);
-    get(db, "assets", &name).await.into_response()
+    get(db, "assets", &name).into_response()
 }
 
-async fn get(db: &Database, path: &str, name: &str) -> impl IntoResponse {
-    match File::by_path_and_name(db, path, name).await {
-        Some(file) => {
+fn get(db: &Database, path: &str, name: &str) -> impl IntoResponse {
+    match File::by_path_and_name(db, path, name) {
+        Ok(file) => {
             let content_type = mime_guess::from_path(name).first_or_octet_stream();
 
             let header = ax::HeaderMap::from_iter(vec![(
@@ -131,8 +116,13 @@ async fn get(db: &Database, path: &str, name: &str) -> impl IntoResponse {
                 content_type.to_string().parse().unwrap(),
             )]);
 
-            (header, file.get_data(db).await).into_response()
+            let data = match file.get_data(db) {
+                Ok(data) => data,
+                Err(_) => return make_error(500, "Failed to get file data").into_response(),
+            };
+
+            (header, data).into_response()
         }
-        None => ax::StatusCode::NOT_FOUND.into_response(),
+        Err(_) => make_error(404, "File not found").into_response(),
     }
 }

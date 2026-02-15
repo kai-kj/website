@@ -1,3 +1,4 @@
+use crate::database::SqliteError;
 use crate::prelude::*;
 
 pub struct Asset {
@@ -6,8 +7,8 @@ pub struct Asset {
 }
 
 impl Asset {
-    pub async fn setup(db: &Database) {
-        sqlx::query(
+    pub fn setup(db: &Database) -> Result<(), Error> {
+        db.execute_batch(
             r#"
                 CREATE TABLE IF NOT EXISTS styles (
                     id INTEGER PRIMARY KEY,
@@ -26,74 +27,60 @@ impl Asset {
                 CREATE INDEX IF NOT EXISTS assets_name_index ON styles (name);
             "#,
         )
-        .execute(&db.pool)
-        .await
-        .expect("failed to create styles table");
+        .context("failed to create styles table")
     }
 
-    fn from_row(row: sqlx::sqlite::SqliteRow) -> Self {
-        Self {
-            id: row.get(0),
-            name: row.get(1),
-        }
+    fn from_row(row: &Row) -> Result<Self, SqliteError> {
+        Ok(Self {
+            id: row.get(0)?,
+            name: row.get(1)?,
+        })
     }
 
-    pub async fn new(db: &Database, path: &Path) -> Self {
+    pub fn new(db: &Database, path: &Path) -> Result<Self, Error> {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .expect("invalid asset path");
+            .context("invalid asset path")?;
 
-        let data = fs::read(path).expect("failed to read asset file");
+        let data = fs::read(path).context("failed to read asset file")?;
 
-        let record = sqlx::query("INSERT INTO styles (name, data) VALUES (?, ?) RETURNING id")
-            .bind(name)
-            .bind(data)
-            .fetch_one(&db.pool)
-            .await
-            .expect("failed to insert asset into database");
-
-        Asset {
-            id: record.get(0),
-            name: name.to_string(),
-        }
+        db.query_one(
+            "INSERT INTO styles (name, data) VALUES (?, ?) RETURNING id, name",
+            (name, data),
+            Asset::from_row,
+        )
+        .context("failed to insert asset into database")
     }
 
-    pub async fn by_post_and_name(
+    pub fn by_post_and_name(
         db: &Database,
         post_name: &str,
         asset_name: &str,
-    ) -> Option<Asset> {
-        sqlx::query(
+    ) -> Result<Self, Error> {
+        db.query_one(
             r#"
                 SELECT styles.id, styles.name
                 FROM styles
                 JOIN posts_assets ON styles.id = posts_assets.asset_id
                 WHERE posts_assets.post_id = ? AND styles.name = ?;
             "#,
+            (post_name, asset_name),
+            Asset::from_row,
         )
-        .bind(post_name)
-        .bind(asset_name)
-        .fetch_optional(&db.pool)
-        .await
-        .expect("failed to query asset by post name and asset name from database")
-        .map(Asset::from_row)
+        .context("failed to query asset by post name and asset name from database")
     }
 
-    pub async fn get_data(&self, db: &Database) -> Vec<u8> {
-        sqlx::query("SELECT data FROM styles WHERE id = ?;")
-            .bind(self.id)
-            .fetch_one(&db.pool)
-            .await
-            .expect("failed to query data from database")
-            .get(0)
+    pub fn get_data(&self, db: &Database) -> Result<Vec<u8>, Error> {
+        db.query_one("SELECT data FROM styles WHERE id = ?;", [self.id], |row| {
+            row.get(0)
+        })
+        .context("failed to query data from database")
     }
 
-    pub async fn delete_all(db: &Database) {
-        sqlx::query("DELETE FROM styles")
-            .execute(&db.pool)
-            .await
-            .expect("failed to delete all styles from database");
+    pub fn delete_all(db: &Database) -> Result<(), Error> {
+        db.execute("DELETE FROM styles", [])
+            .context("failed to delete all styles from database")
     }
 }
 
@@ -101,13 +88,13 @@ pub async fn get_asset(
     ax::State(state): ax::State<Arc<AppState>>,
     ax::Path((post, name)): ax::Path<(String, String)>,
 ) -> impl IntoResponse {
-    let db = &state.db;
+    let db = &state.db.lock().unwrap();
 
     println!("GET asset {}/{}", post, name);
 
-    let asset = match Asset::by_post_and_name(db, &post, &name).await {
-        Some(asset) => asset,
-        None => return ax::StatusCode::NOT_FOUND.into_response(),
+    let asset = match Asset::by_post_and_name(db, &post, &name) {
+        Ok(asset) => asset,
+        Err(_) => return make_error(404, "Asset not found").into_response(),
     };
 
     let content_type = mime_guess::from_path(&asset.name).first_or_octet_stream();
@@ -117,5 +104,10 @@ pub async fn get_asset(
         content_type.to_string().parse().unwrap(),
     )]);
 
-    (header, asset.get_data(db).await).into_response()
+    let data = match asset.get_data(db) {
+        Ok(data) => data,
+        Err(_) => return make_error(500, "Failed to get asset data").into_response(),
+    };
+
+    (header, data).into_response()
 }

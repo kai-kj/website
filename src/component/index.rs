@@ -4,10 +4,15 @@ pub async fn get_index(
     ax::State(state): ax::State<Arc<AppState>>,
     cookies: ax::CookieJar,
 ) -> impl IntoResponse {
-    let db = &state.db;
-    let user = User::from_cookie(db, &cookies).await;
+    let db = &state.db.lock().unwrap();
+    let user = User::from_cookie(db, &cookies).ok();
 
     println!("GET index, user = {:?}", user);
+
+    let posts_table = match make_posts_table(db, None, Some(5), false, true) {
+        Ok(posts_table) => posts_table,
+        Err(_) => return make_error(500, "Failed to load posts table").into_response(),
+    };
 
     let content = html! {
         h1 { "About me" }
@@ -26,7 +31,7 @@ pub async fn get_index(
 
         h1 { "Recent posts" }
 
-        (make_posts_table(db, None, Some(5), false, true).await)
+        (posts_table)
     };
 
     let page = make_page(
@@ -35,6 +40,7 @@ pub async fn get_index(
         vec!["/styles/post.css"],
         content,
         user,
+        false,
     );
 
     ax::Html::from(page.into_string()).into_response()

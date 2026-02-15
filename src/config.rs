@@ -25,12 +25,12 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_json_str(json_str: &str) -> Config {
-        serde_json::from_str(json_str).expect("failed to decode configuration")
+    pub fn from_json_str(json_str: &str) -> Result<Config, Error> {
+        serde_json::from_str(json_str).context("failed to decode configuration")
     }
 
-    pub fn from_json_file(path: &str) -> Config {
-        let json_str = fs::read_to_string(path).expect("failed to read configuration file");
+    pub fn from_json_file(path: &str) -> Result<Config, Error> {
+        let json_str = fs::read_to_string(path).context("failed to read configuration file")?;
         Config::from_json_str(&json_str)
     }
 }

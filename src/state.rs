@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
 pub struct AppState {
-    pub db: Database,
-    pub config: Config,
+    pub db: Arc<Mutex<Database>>,
+    pub config: Arc<Mutex<Config>>,
 }

@@ -1,3 +1,4 @@
+use crate::database::SqliteError;
 use crate::prelude::*;
 use std::hash::{Hash, Hasher};
 
@@ -8,8 +9,8 @@ pub struct User {
 }
 
 impl User {
-    pub async fn setup(db: &Database) {
-        sqlx::query(
+    pub fn setup(db: &Database) -> Result<(), Error> {
+        db.execute_batch(
             r#"
                 CREATE TABLE IF NOT EXISTS users (
                     key_hash TEXT PRIMARY KEY,
@@ -17,66 +18,48 @@ impl User {
                 );
             "#,
         )
-        .execute(&db.pool)
-        .await
-        .expect("failed to create users table");
+        .context("failed to create users table")
     }
 
-    fn from_row(row: sqlx::sqlite::SqliteRow) -> Self {
-        Self {
-            key_hash: row.get(0),
-            group_name: row.get(1),
-        }
+    fn from_row(row: &Row) -> Result<Self, SqliteError> {
+        Ok(Self {
+            key_hash: row.get(0)?,
+            group_name: row.get(1)?,
+        })
     }
 
-    pub async fn new(db: &Database, key_hash: &str, group_name: &str) -> Self {
+    pub fn new(db: &Database, key_hash: &str, group_name: &str) -> Result<Self, Error> {
         let key_hash = Self::key_hash(key_hash);
 
-        sqlx::query(
-            r#"
-                INSERT INTO users (key_hash, group_name) VALUES (?, ?)
-            "#,
+        db.execute(
+            "INSERT INTO users (key_hash, group_name) VALUES (?, ?)",
+            (&key_hash, group_name),
         )
-        .bind(&key_hash)
-        .bind(group_name)
-        .execute(&db.pool)
-        .await
-        .expect("failed to insert user into database");
+        .context("failed to insert user into database")?;
 
-        Self {
+        Ok(Self {
             key_hash,
             group_name: group_name.to_string(),
-        }
+        })
     }
 
-    pub async fn from_cookie(db: &Database, cookies: &ax::CookieJar) -> Option<User> {
-        let key = cookies.get("key").map(|key| key.value().to_string());
-
-        if let Some(key) = key {
-            Self::by_hash(db, &key).await
-        } else {
-            None
-        }
+    pub fn from_cookie(db: &Database, cookies: &ax::CookieJar) -> Result<User, Error> {
+        let key = cookies.get("key").ok_or(Error::new("no key in cookies"))?;
+        Self::by_hash(db, key.value())
     }
 
-    pub async fn by_hash(db: &Database, key_hash: &str) -> Option<User> {
-        sqlx::query(
-            r#"
-                SELECT key_hash, group_name FROM users WHERE key_hash = ?;
-            "#,
+    pub fn by_hash(db: &Database, key_hash: &str) -> Result<User, Error> {
+        db.query_one(
+            "SELECT key_hash, group_name FROM users WHERE key_hash = ?;",
+            [key_hash],
+            User::from_row,
         )
-        .bind(key_hash)
-        .fetch_optional(&db.pool)
-        .await
-        .expect("failed to query user by password from database")
-        .map(User::from_row)
+        .context("failed to query user by key_hash from database")
     }
 
-    pub async fn delete_all(db: &Database) {
-        sqlx::query("DELETE FROM users")
-            .execute(&db.pool)
-            .await
-            .expect("failed to delete all users from database");
+    pub fn delete_all(db: &Database) -> Result<(), Error> {
+        db.execute("DELETE FROM users", [])
+            .context("failed to delete all users from database")
     }
 
     fn key_hash(key: &str) -> String {
@@ -103,8 +86,8 @@ pub async fn get_login(
     ax::Query(params): ax::Query<HashMap<String, String>>,
     cookie: ax::CookieJar,
 ) -> impl IntoResponse {
-    let db = &state.db;
-    let user = User::from_cookie(db, &cookie).await;
+    let db = &state.db.lock().unwrap();
+    let user = User::from_cookie(db, &cookie).ok();
     let failed = if let Some(failed) = params.get("failed") {
         failed == "true"
     } else {
@@ -130,6 +113,7 @@ pub async fn get_login(
         vec!["/styles/login.css"],
         content,
         user,
+        false,
     );
 
     ax::Html::from(page.into_string()).into_response()
@@ -144,10 +128,10 @@ pub async fn post_login(
     ax::State(state): ax::State<Arc<AppState>>,
     form: ax::Form<LoginForm>,
 ) -> impl IntoResponse {
-    let db = &state.db;
+    let db = &state.db.lock().unwrap();
 
     let hash = User::key_hash(&form.key);
-    let user = User::by_hash(db, &hash).await;
+    let user = User::by_hash(db, &hash).ok();
 
     if let Some(user) = user {
         println!("POST login, user = {:?}", user);

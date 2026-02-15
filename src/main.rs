@@ -1,6 +1,7 @@
 mod component;
 mod config;
 mod database;
+mod error;
 mod prelude;
 mod state;
 
@@ -12,8 +13,8 @@ async fn main() {
     let args = std::env::args().collect::<Vec<String>>();
 
     match args.get(1).map(|s| s.as_str()) {
-        Some("build") => build().await,
-        Some("serve") => serve().await,
+        Some("build") => build().await.unwrap(),
+        Some("serve") => serve().await.unwrap(),
         _ => {
             eprintln!("Usage: {} [build|serve]", args[0]);
             std::process::exit(1);
@@ -21,49 +22,51 @@ async fn main() {
     }
 }
 
-async fn build() {
-    let config = Config::from_json_file("website.json");
-    let db = Database::connect(&config.database_path).await;
+async fn build() -> Result<(), Error> {
+    let config = Config::from_json_file("website.json")?;
+    let db = Database::connect(&config.database_path)?;
 
-    Post::setup(&db).await;
-    Asset::setup(&db).await;
-    Photo::setup(&db).await;
-    File::setup(&db).await;
-    User::setup(&db).await;
+    Post::setup(&db)?;
+    Asset::setup(&db)?;
+    Photo::setup(&db)?;
+    File::setup(&db)?;
+    User::setup(&db)?;
 
-    Post::delete_all(&db).await;
-    Photo::unmark_all(&db).await;
-    File::delete_all(&db).await;
-    Asset::delete_all(&db).await;
-    User::delete_all(&db).await;
+    Post::delete_all(&db)?;
+    Photo::unmark_all(&db)?;
+    File::delete_all(&db)?;
+    Asset::delete_all(&db)?;
+    User::delete_all(&db)?;
 
     for user in &config.users {
-        User::new(&db, &user.key, &user.group).await;
+        User::new(&db, &user.key, &user.group)?;
     }
 
     for parent in fs::read_dir(&config.files_path).expect("failed to read files directory") {
-        let parent = parent.unwrap();
+        let parent = parent?;
         for entry in fs::read_dir(parent.path()).expect("failed to read files directory") {
-            File::new(&db, &parent.path(), &entry.unwrap().path()).await;
+            File::new(&db, &parent.path(), &entry?.path())?;
         }
     }
 
     for post_path in fs::read_dir(&config.posts_path).expect("failed to read posts directory") {
-        Post::new(&db, &config, &post_path.unwrap().path()).await;
+        Post::new(&db, &config, &post_path?.path())?;
     }
 
-    Photo::delete_unmarked(&db).await;
+    Photo::delete_unmarked(&db)?;
 
     println!("all done!");
+
+    Ok(())
 }
 
-async fn serve() {
-    let config = Config::from_json_file("website.json");
-    let db = Database::connect(&config.database_path).await;
+async fn serve() -> Result<(), Error> {
+    let config = Config::from_json_file("website.json")?;
+    let db = Database::connect(&config.database_path)?;
 
     let state = Arc::new(AppState {
-        db,
-        config: config.clone(),
+        db: Arc::new(Mutex::new(db)),
+        config: Arc::new(Mutex::new(config.clone())),
     });
 
     let app = ax::Router::new()
@@ -85,7 +88,7 @@ async fn serve() {
 
     let listener = TcpListener::bind(format!("{}:{}", config.server_host, config.server_port))
         .await
-        .expect("failed to bind server");
+        .context("failed to bind server")?;
 
     println!(
         "Server running on http://{}:{}",
@@ -94,7 +97,9 @@ async fn serve() {
 
     axum::serve(listener, app)
         .await
-        .expect("failed to start server");
+        .context("failed to start server")?;
+
+    Ok(())
 }
 
 // fn make_redirect(path: &str) -> axum::routing::MethodRouter<Arc<AppState>> {

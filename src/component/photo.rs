@@ -1,5 +1,6 @@
 use std::hash::{Hash, Hasher};
 
+use crate::database::SqliteError;
 use crate::prelude::*;
 use image::codecs::jpeg::JpegEncoder;
 use image::ImageReader;
@@ -14,8 +15,8 @@ pub struct Photo {
 }
 
 impl Photo {
-    pub async fn setup(db: &Database) {
-        sqlx::query(
+    pub fn setup(db: &Database) -> Result<(), Error> {
+        db.execute_batch(
             r#"
                 CREATE TABLE IF NOT EXISTS photos (
                     id TEXT PRIMARY KEY,
@@ -38,50 +39,50 @@ impl Photo {
                 CREATE INDEX IF NOT EXISTS photos_source_path_index ON photos (source_path);
             "#,
         )
-        .execute(&db.pool)
-        .await
-        .expect("failed to create photos table");
+        .context("failed to create photos table")
     }
 
-    fn from_row(row: sqlx::sqlite::SqliteRow) -> Self {
-        Self {
-            id: row.get(0),
-            mark: row.get(1),
-            is_private: row.get(2),
-            source_path: row.get(3),
-            source_time: row.get(4),
-        }
+    fn from_row(row: &Row) -> Result<Self, SqliteError> {
+        Ok(Self {
+            id: row.get(0)?,
+            mark: row.get(1)?,
+            is_private: row.get(2)?,
+            source_path: row.get(3)?,
+            source_time: row.get(4)?,
+        })
     }
 
-    pub async fn new(db: &Database, cfg: &Config, source_path: &Path, is_private: bool) -> Photo {
+    pub fn new(
+        db: &Database,
+        cfg: &Config,
+        source_path: &Path,
+        is_private: bool,
+    ) -> Result<Photo, Error> {
         let source_time = source_path
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .metadata()?
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
 
         println!("loading photo {:?}", source_path);
 
-        if let Some(existing_photo) = Photo::by_path(db, source_path).await {
+        if let Ok(existing_photo) = Photo::get_by_path(db, source_path) {
             if existing_photo.source_time >= source_time {
                 println!("photo is up to date, skipping");
-                existing_photo.mark(db).await;
-                return existing_photo;
+                existing_photo.mark(db)?;
+                return Ok(existing_photo);
             }
 
             println!("photo is outdated, updating");
-            existing_photo.delete(db).await;
+            existing_photo.delete(db)?;
         } else {
             println!("photo is new, inserting");
         }
 
         let image_large = ImageReader::open(source_path)
-            .expect("failed to open image")
+            .context("failed to open photo")?
             .decode()
-            .expect("failed to decode image");
+            .context("failed to decode photo")?;
 
         println!("size: {}x{}", image_large.width(), image_large.height());
 
@@ -101,14 +102,14 @@ impl Photo {
         image_large
             .to_rgb8()
             .write_with_encoder(encoder_large)
-            .expect("failed to encode large image as JPEG");
+            .context("failed to encode large photo")?;
 
         let mut data_small = vec![];
         let encoder_small = JpegEncoder::new_with_quality(&mut data_small, cfg.photo_quality);
         image_small
             .to_rgb8()
             .write_with_encoder(encoder_small)
-            .expect("failed to encode small image as JPEG");
+            .context("failed to encode small photo")?;
 
         let source_path = source_path.to_str().unwrap();
 
@@ -116,65 +117,35 @@ impl Photo {
         source_path.hash(&mut hasher);
         let id = format!("{:016x}", hasher.finish());
 
-        sqlx::query(
+        db.query_one(
             r#"
-                    INSERT INTO photos (id, is_private, source_path, source_time, image_large_jpg, image_small_jpg)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    RETURNING id
-                "#
-        )
-            .bind(&id)
-            .bind(is_private)
-            .bind(source_path)
-            .bind(source_time)
-            .bind(data_large)
-            .bind(data_small)
-            .execute(&db.pool)
-            .await
-            .expect("failed to insert photo into database");
-
-        Self::by_id(db, &id).await.unwrap()
-    }
-
-    pub async fn by_id(db: &Database, id: &str) -> Option<Photo> {
-        sqlx::query(
-            r#"
-                SELECT id, mark, is_private, source_path, source_time
-                FROM photos
-                WHERE id = ?;
+                INSERT INTO photos (id, is_private, source_path, source_time, image_large_jpg, image_small_jpg)
+                VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING id, is_private, source_path, source_time, image_large_jpg, image_small_jpg
             "#,
-        )
-        .bind(id)
-        .fetch_optional(&db.pool)
-        .await
-        .expect("failed to query photo by source path from database")
-        .map(Photo::from_row)
+            (id, is_private, source_path, source_time, data_large, data_small),
+            Photo::from_row,
+        ).context("failed to insert photo into database")
     }
 
-    pub async fn by_path(db: &Database, source_path: &Path) -> Option<Photo> {
-        let source_path = source_path.to_str().unwrap();
-
-        sqlx::query(
-            r#"
-                SELECT id, mark, is_private, source_path, source_time
-                FROM photos
-                WHERE source_path = ?
-            "#,
+    pub fn get_by_id(db: &Database, id: &str) -> Result<Photo, Error> {
+        db.query_one(
+            "SELECT id, mark, is_private, source_path, source_time FROM photos WHERE id = ?;",
+            [id],
+            |row| Self::from_row(row),
         )
-        .bind(source_path)
-        .fetch_optional(&db.pool)
-        .await
-        .expect("failed to query photo by source path from database")
-        .map(Photo::from_row)
+        .context("failed to query photo by id from database")
     }
 
-    pub async fn list(
-        db: &Database,
-        include_private: bool,
-        post_id: Option<&str>,
-        offset: Option<u32>,
-        limit: Option<u32>,
-    ) -> (Vec<Photo>, u32) {
+    pub fn get_by_path(db: &Database, source_path: &Path) -> Result<Photo, Error> {
+        db.query_one(
+            "SELECT id, mark, is_private, source_path, source_time FROM photos WHERE source_path = ?",
+            [source_path.to_str().unwrap()],
+            |row| Self::from_row(row),
+        )
+    }
+
+    pub fn get_all(db: &Database, post_id: Option<&str>) -> Result<Vec<Photo>, Error> {
         let mut query = r#"
             SELECT photos.id, photos.mark, photos.is_private, photos.source_path, photos.source_time
             FROM photos
@@ -187,115 +158,70 @@ impl Photo {
             query.push_str("\nWHERE posts_photos.post_id = ?");
         }
 
-        query.push_str("\nORDER BY posts.date DESC, photos.source_time DESC");
-
-        if let Some(limit) = limit {
-            query.push_str(&format!("\nLIMIT {}", limit));
-        }
-
-        if let Some(offset) = offset {
-            query.push_str(&format!("\nOFFSET {}", offset));
-        }
-
-        query.push(';');
-
-        let mut query = sqlx::query(&query);
+        query.push_str("\nORDER BY posts.date DESC, photos.source_time DESC;");
 
         if let Some(post_id) = post_id {
-            query = query.bind(post_id);
-        }
-
-        let all_photos = query
-            .fetch_all(&db.pool)
-            .await
-            .expect("failed to query photos from database")
-            .into_iter()
-            .map(Photo::from_row)
-            .collect::<Vec<_>>();
-
-        let all_photos_len = all_photos.len();
-
-        let photos = all_photos
-            .into_iter()
-            .filter(|photo| !photo.is_private || include_private)
-            .collect::<Vec<_>>();
-
-        let photos_len = photos.len();
-
-        (photos, (all_photos_len - photos_len) as u32)
-    }
-
-    pub async fn count(db: &Database) -> u32 {
-        sqlx::query("SELECT COUNT(*) FROM photos;")
-            .fetch_one(&db.pool)
-            .await
-            .expect("failed to count photos in database")
-            .get(0)
-    }
-
-    pub async fn mark(&self, db: &Database) {
-        sqlx::query("UPDATE photos SET mark = TRUE WHERE id = ?")
-            .bind(&self.id)
-            .execute(&db.pool)
-            .await
-            .expect("failed to mark photo in database");
-    }
-
-    pub async fn delete(self, db: &Database) {
-        sqlx::query("DELETE FROM photos WHERE id = ?")
-            .bind(self.id)
-            .execute(&db.pool)
-            .await
-            .expect("failed to delete photo from database");
-    }
-
-    pub async fn unmark_all(db: &Database) {
-        sqlx::query("UPDATE photos SET mark = FALSE")
-            .execute(&db.pool)
-            .await
-            .expect("failed to unmark all photos in database");
-    }
-
-    pub async fn delete_unmarked(db: &Database) {
-        sqlx::query("DELETE FROM photos WHERE mark = FALSE")
-            .execute(&db.pool)
-            .await
-            .expect("failed to delete unmarked photos in database");
-    }
-
-    pub async fn get_image_small(&self, db: &Database) -> Vec<u8> {
-        sqlx::query("SELECT image_small_jpg FROM photos WHERE id = ?;")
-            .bind(&self.id)
-            .fetch_one(&db.pool)
-            .await
-            .expect("failed to query image_small_jpg from database")
-            .get(0)
-    }
-
-    pub async fn get_image_large(&self, db: &Database) -> Vec<u8> {
-        sqlx::query("SELECT image_large_jpg FROM photos WHERE id = ?;")
-            .bind(&self.id)
-            .fetch_one(&db.pool)
-            .await
-            .expect("failed to query image_large_jpg from database")
-            .get(0)
-    }
-
-    pub async fn get_post(&self, db: &Database) -> Option<Post> {
-        let row = sqlx::query("SELECT post_id FROM posts_photos WHERE photo_id = ?;")
-            .bind(&self.id)
-            .fetch_optional(&db.pool)
-            .await
-            .expect("failed to query post_id from database");
-
-        if let Some(row) = row {
-            Post::by_id(db, row.get(0)).await
+            db.query_mul(&query, [post_id], |row| Self::from_row(row))
         } else {
-            None
+            db.query_mul(&query, [], |row| Self::from_row(row))
         }
+        .context("failed to query photos from database")
     }
 
-    pub async fn to_html(&self, link_url: &str, link_text: &str) -> PreEscaped<String> {
+    pub fn count_all(db: &Database) -> Result<u32, Error> {
+        db.query_one("SELECT COUNT(*) FROM photos;", [], |row| row.get(0))
+            .context("failed to count photos in database")
+    }
+
+    pub fn mark(&self, db: &Database) -> Result<(), Error> {
+        db.execute("UPDATE photos SET mark = TRUE WHERE id = ?", [&self.id])
+            .context("failed to mark photo in database")
+    }
+
+    pub fn delete(self, db: &Database) -> Result<(), Error> {
+        db.execute("DELETE FROM photos WHERE id = ?", [&self.id])
+            .context("failed to delete photo from database")
+    }
+
+    pub fn unmark_all(db: &Database) -> Result<(), Error> {
+        db.execute("UPDATE photos SET mark = FALSE", [])
+            .context("failed to unmark all photos in database")
+    }
+
+    pub fn delete_unmarked(db: &Database) -> Result<(), Error> {
+        db.execute("DELETE FROM photos WHERE mark = FALSE", [])
+            .context("failed to delete unmarked photos in database")
+    }
+
+    pub fn get_image_small(&self, db: &Database) -> Result<Vec<u8>, Error> {
+        db.query_one(
+            "SELECT image_small_jpg FROM photos WHERE id = ?;",
+            [&self.id],
+            |row| row.get(0),
+        )
+        .context("failed to query image_small from database")
+    }
+
+    pub fn get_image_large(&self, db: &Database) -> Result<Vec<u8>, Error> {
+        db.query_one(
+            "SELECT image_small_jpg FROM photos WHERE id = ?;",
+            [&self.id],
+            |row| row.get(0),
+        )
+        .context("failed to query image_large from database")
+    }
+
+    pub fn get_post(&self, db: &Database) -> Result<Post, Error> {
+        db.query_one(
+            "SELECT post_id FROM posts_photos WHERE photo_id = ?;",
+            [&self.id],
+            |row| row.get(0),
+        )
+        .and_then(|id: String| Post::by_id(db, &id))
+        .context("failed to query post from database")
+    }
+
+    pub fn to_html(&self, link_url: &str, link_text: &str) -> PreEscaped<String> {
         html!(
             div class = "photo-preview" {
                 div {
@@ -312,9 +238,9 @@ pub async fn get_photos(
     ax::Query(params): ax::Query<HashMap<String, String>>,
     cookies: ax::CookieJar,
 ) -> impl IntoResponse {
-    let db = &state.db;
-    let cfg = &state.config;
-    let user = User::from_cookie(db, &cookies).await;
+    let db = &state.db.lock().unwrap();
+    let cfg = &state.config.lock().unwrap();
+    let user = User::from_cookie(db, &cookies).ok();
 
     let page = params
         .get("page")
@@ -323,20 +249,34 @@ pub async fn get_photos(
 
     println!("GET photos, page = {}, user = {:?}", page, user);
 
-    let n_photos = Photo::count(db).await;
+    let photos = match Photo::get_all(db, None) {
+        Ok(photos) => photos
+            .into_iter()
+            .filter(|photo| !photo.is_private || user.is_some())
+            .collect::<Vec<_>>(),
+        Err(_) => return make_error(500, "Failed to get photos").into_response(),
+    };
+
+    let n_photos = photos.len() as u32;
     let last_page = n_photos / cfg.photos_per_page + u32::min(1, n_photos % cfg.photos_per_page);
-    let offset = Some((page - 1) * cfg.photos_per_page);
-    let limit = Some(cfg.photos_per_page);
 
     if page > last_page {
-        return make_error(404, "Page not found", user).into_response();
+        return make_error(404, "Page not found").into_response();
     }
 
-    let (photos, _) = Photo::list(db, user.is_some(), None, offset, limit).await;
+    let photos = photos
+        .into_iter()
+        .skip(((page - 1) * cfg.photos_per_page) as usize)
+        .take(cfg.photos_per_page as usize);
 
     let content = html!(
         @for photo in photos {
-            (photo.to_html(&format!("/posts/{}/", photo.get_post(db).await.unwrap().id), "↪ to post").await)
+            @let post = match photo.get_post(db) {
+                Ok(post) => post,
+                Err(_) => return make_error(500, "Failed to get post").into_response(),
+            };
+
+            (photo.to_html(&format!("/posts/{}/", post.id), "↪ to post"))
         }
         section id="photo-navigation" {
             @if page > 1 {
@@ -357,6 +297,7 @@ pub async fn get_photos(
         vec!["/styles/photo.css"],
         content,
         user,
+        false,
     );
 
     ax::Html::from(page.into_string()).into_response()
@@ -368,8 +309,8 @@ pub async fn get_photo(
     ax::Query(params): ax::Query<HashMap<String, String>>,
     cookie: ax::CookieJar,
 ) -> impl IntoResponse {
-    let db = &state.db;
-    let user = User::from_cookie(db, &cookie).await;
+    let db = &state.db.lock().unwrap();
+    let user = User::from_cookie(db, &cookie).ok();
 
     let size = match params.get("size").map(|s| s.as_str()) {
         Some("small") => "small",
@@ -379,26 +320,28 @@ pub async fn get_photo(
 
     println!("GET photo {}, size = {}, user = {:?}", id, size, user);
 
-    let photo = match Photo::by_id(db, &id).await {
-        Some(photo) => photo,
-        None => return ax::StatusCode::NOT_FOUND.into_response(),
+    let photo = match Photo::get_by_id(db, &id) {
+        Ok(photo) => photo,
+        Err(_) => return make_error(404, "Photo not found").into_response(),
     };
 
     if photo.is_private && user.is_none() {
         return ax::StatusCode::FORBIDDEN.into_response();
     }
 
-    let data = match size {
-        "small" => photo.get_image_small(db).await,
-        "large" => photo.get_image_large(db).await,
+    let data = match match size {
+        "small" => photo.get_image_small(db),
+        "large" => photo.get_image_large(db),
         _ => unreachable!(),
+    } {
+        Ok(data) => data,
+        Err(_) => return make_error(500, "Failed to get photo data").into_response(),
     };
 
-    let mut header = ax::HeaderMap::new();
-    header.insert(
+    let header = ax::HeaderMap::from_iter(vec![(
         ax::header::CONTENT_TYPE,
         mime::IMAGE_JPEG.to_string().parse().unwrap(),
-    );
+    )]);
 
     (header, data).into_response()
 }

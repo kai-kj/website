@@ -8,6 +8,7 @@ pub fn make_page(
     additional_styles: Vec<&str>,
     content: impl Into<String>,
     user: Option<User>,
+    hide_user: bool,
 ) -> Markup {
     html! {
         (DOCTYPE)
@@ -40,12 +41,14 @@ pub fn make_page(
                         a href="/posts/" { "Posts" }
                         a href="/projects/" { "Projects" }
                         a href="/photos/" { "Photos" }
-                        @if user.is_some() {
-                            form action="/logout/" method="post" {
-                                input type="submit" value="Logout" {}
+                        @if !hide_user {
+                            @if user.is_some() {
+                                form action="/logout/" method="post" {
+                                    input type="submit" value="Logout" {}
+                                }
+                            } @else {
+                                a href="/login/" { "Login" }
                             }
-                        } @else {
-                            a href="/login/" { "Login" }
                         }
                     }
                 }
